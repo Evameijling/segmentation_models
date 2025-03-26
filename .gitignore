@@ -1,0 +1,12 @@
+samples/
+predictions/
+predictions_VesselDetectHRSIDDataset/
+predictions_VesselDetectGRDDataset/
+samples_VesselDetectHRSIDDataset/
+samples_VesselDetectGRDDataset/
+**/*.pth
+**/__pycache__/*
+lightning_logs/
+wandb/
+seg_venv/
+unet-vessel-detection/
