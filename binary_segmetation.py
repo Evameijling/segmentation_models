@@ -30,7 +30,7 @@ class Config:
     encoder_name: str = "resnext50_32x4d"
     in_channels: int = 2
     out_classes: int = 1
-    dataset: type = VesselDetectGRDDataset # VesselDetectHRSIDDataset or VesselDetectGRDDataset
+    dataset: type = VesselDetectHRSIDDataset # VesselDetectHRSIDDataset or VesselDetectGRDDataset
 
 config = Config()
 
@@ -175,16 +175,31 @@ class VesselDetectModel(pl.LightningModule):
         tn = torch.cat([x["tn"] for x in outputs])
 
         # per image IoU: first calculate IoU score for each image and then compute mean over these scores
-        per_image_iou = smp.metrics.iou_score(
-            tp, fp, fn, tn, reduction="micro-imagewise"
-        )
+        per_image_iou = smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro-imagewise")
 
         # dataset IoU: aggregate intersection and union over all images and then compute IoU score
         dataset_iou = smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro")
+
+         # IoU for the vessel class (binary IoU)
+        vessel_iou = smp.metrics.iou_score(tp, fp, fn, tn, reduction="none")[1]  # Index 1 corresponds to the vessel class
+
+        # Mean Accuracy (mAcc): mean of pixel-wise accuracy across all images
+        mAcc = smp.metrics.accuracy(tp, fp, fn, tn, reduction="micro")
+
+        # Mean F1 score (mF1): mean of F1 scores across all images
+        mF1 = smp.metrics.f1_score(tp, fp, fn, tn, reduction="micro")
+
+        # F1 score for the vessel class
+        vessel_f1 = smp.metrics.f1_score(tp, fp, fn, tn, reduction="none")[1]  # Index 1 corresponds to the vessel class
         
+        # Log metrics
         metrics = {
             f"{stage}_per_image_iou": per_image_iou,
             f"{stage}_dataset_iou": dataset_iou,
+            f"{stage}_mAcc": mAcc,
+            f"{stage}_IoU_vessel": vessel_iou,
+            f"{stage}_mF1": mF1,
+            f"{stage}_F1_vessel": vessel_f1,
         }
 
         self.log_dict(metrics, prog_bar=True)
@@ -192,6 +207,10 @@ class VesselDetectModel(pl.LightningModule):
         # Log metrics individually
         self.log(f"{stage}_per_image_iou", per_image_iou, prog_bar=True, on_epoch=True)
         self.log(f"{stage}_dataset_iou", dataset_iou, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}_mAcc", mAcc, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}_IoU_vessel", vessel_iou, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}_mF1", mF1, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}_F1_vessel", vessel_f1, prog_bar=True, on_epoch=True)
 
     def training_step(self, batch, batch_idx):
         train_loss_info = self.shared_step(batch, "train")
@@ -278,10 +297,18 @@ Validation Metrics:
 - Loss: {valid_metrics[0]["valid_loss"]}
 - Per image IoU: {valid_metrics[0]["valid_per_image_iou"]}
 - Dataset IoU: {valid_metrics[0]["valid_dataset_iou"]}
+- Mean Accuracy (mAcc): {valid_metrics[0]["valid_mAcc"]}
+- IoU (Vessel): {valid_metrics[0]["valid_IoU_vessel"]}
+- Mean F1 Score (mF1): {valid_metrics[0]["valid_mF1"]}
+- F1 Score (Vessel): {valid_metrics[0]["valid_F1_vessel"]}
 
 Test Metrics:
 - Per image IoU: {test_metrics[0]["test_per_image_iou"]}
 - Dataset IoU: {test_metrics[0]["test_dataset_iou"]}
+- Mean Accuracy (mAcc): {test_metrics[0]["test_mAcc"]}
+- IoU (Vessel): {test_metrics[0]["test_IoU_vessel"]}
+- Mean F1 Score (mF1): {test_metrics[0]["test_mF1"]}
+- F1 Score (Vessel): {test_metrics[0]["test_F1_vessel"]}
 """)
 
 # result visualization
