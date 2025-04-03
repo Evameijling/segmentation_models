@@ -28,6 +28,8 @@ class Config:
     learning_rate: float = 2e-4
     architecture: str = "unet"
     encoder_name: str = "resnext50_32x4d"
+    encoder_weights: str = "imagenet"
+    use_pretrained: bool = True
     in_channels: int = 2
     out_classes: int = 1
     dataset: type = VesselDetectHRSIDDataset # VesselDetectHRSIDDataset or VesselDetectGRDDataset
@@ -81,7 +83,7 @@ test_loader = DataLoader(
 T_MAX = config.batch_size * len(train_loader)
 
 # Visualize some samples
-os.makedirs(f"samples_{config.dataset.__name__}", exist_ok=True)
+os.makedirs(f"output/samples_{config.dataset.__name__}", exist_ok=True)
 for i in range(5):
     image, mask = train_dataset[i]
     plt.figure(figsize=(12, 4))  
@@ -102,17 +104,17 @@ for i in range(5):
     plt.imshow(mask.squeeze().numpy(), cmap="gray")  # Remove the singleton dimension
     plt.title("Mask")
 
-    plt.savefig(f"samples/sample{i}.png")
+    plt.savefig(f"output/samples_{config.dataset.__name__}/sample{i}.png")
 
 class VesselDetectModel(pl.LightningModule):
-    def __init__(self, arch,  encoder_name, in_channels, out_classes, **kwargs):
+    def __init__(self, arch,  encoder_name, encoder_weights, use_pretrained, in_channels, out_classes, **kwargs):
         super().__init__() 
         self.model = smp.create_model(
             arch,
             encoder_name=encoder_name,
+            encoder_weights=encoder_weights if use_pretrained else None,
             in_channels=in_channels,
             classes=out_classes,
-            # encoder_weights="imagenet",
             **kwargs
         )
         # preprocessing parameters for image
@@ -194,23 +196,23 @@ class VesselDetectModel(pl.LightningModule):
         
         # Log metrics
         metrics = {
-            f"{stage}_per_image_iou": per_image_iou,
-            f"{stage}_dataset_iou": dataset_iou,
-            f"{stage}_mAcc": mAcc,
-            f"{stage}_IoU_vessel": vessel_iou,
-            f"{stage}_mF1": mF1,
-            f"{stage}_F1_vessel": vessel_f1,
+            f"{stage}/per_image_iou": per_image_iou,
+            f"{stage}/dataset_iou": dataset_iou,
+            f"{stage}/mAcc": mAcc,
+            f"{stage}/IoU_vessel": vessel_iou,
+            f"{stage}/mF1": mF1,
+            f"{stage}/F1_vessel": vessel_f1,
         }
 
         self.log_dict(metrics, prog_bar=True)
 
         # Log metrics individually
-        self.log(f"{stage}_per_image_iou", per_image_iou, prog_bar=True, on_epoch=True)
-        self.log(f"{stage}_dataset_iou", dataset_iou, prog_bar=True, on_epoch=True)
-        self.log(f"{stage}_mAcc", mAcc, prog_bar=True, on_epoch=True)
-        self.log(f"{stage}_IoU_vessel", vessel_iou, prog_bar=True, on_epoch=True)
-        self.log(f"{stage}_mF1", mF1, prog_bar=True, on_epoch=True)
-        self.log(f"{stage}_F1_vessel", vessel_f1, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/per_image_iou", per_image_iou, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/dataset_iou", dataset_iou, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/mAcc", mAcc, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/IoU_vessel", vessel_iou, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/mF1", mF1, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/F1_vessel", vessel_f1, prog_bar=True, on_epoch=True)
 
     def training_step(self, batch, batch_idx):
         train_loss_info = self.shared_step(batch, "train")
@@ -221,6 +223,16 @@ class VesselDetectModel(pl.LightningModule):
     def on_train_epoch_end(self):
         self.shared_epoch_end(self.training_step_outputs, "train")
         self.training_step_outputs.clear() # empty set output list
+
+        train_metrics = self.trainer.callback_metrics
+        print(f"Epoch {self.current_epoch + 1}:")
+        print(f"  Train Loss: {train_metrics['train_loss']:.4f}")
+        print(f"  Train Mean Accuracy (mAcc): {train_metrics['train/mAcc']:.4f}")
+        print(f"  Train Per Image IoU: {train_metrics['train/per_image_iou']:.4f}")
+        print(f"  Train Dataset IoU: {train_metrics['train/dataset_iou']:.4f}")
+        print(f"  Train IoU (Vessel): {train_metrics['train/IoU_vessel']:.4f}")
+        print(f"  Train Mean F1 Score (mF1): {train_metrics['train/mF1']:.4f}")
+        print(f"  Train F1 Score (Vessel): {train_metrics['train/F1_vessel']:.4f}")
         return
 
     def validation_step(self, batch, batch_idx):
@@ -232,6 +244,16 @@ class VesselDetectModel(pl.LightningModule):
     def on_validation_epoch_end(self):
         self.shared_epoch_end(self.validation_step_outputs, "valid")
         self.validation_step_outputs.clear()  # empty set output list
+
+        valid_metrics = self.trainer.callback_metrics  # Access logged metrics
+        print(f"Epoch {self.current_epoch + 1}:")
+        print(f"  Validation Loss: {valid_metrics['valid_loss']:.4f}")
+        print(f"  Validation Mean Accuracy (mAcc): {valid_metrics['valid/mAcc']:.4f}")
+        print(f"  Validation Per Image IoU: {valid_metrics['valid/per_image_iou']:.4f}")
+        print(f"  Validation Dataset IoU: {valid_metrics['valid/dataset_iou']:.4f}")
+        print(f"  Validation IoU (Vessel): {valid_metrics['valid/IoU_vessel']:.4f}")
+        print(f"  Validation Mean F1 Score (mF1): {valid_metrics['valid/mF1']:.4f}")
+        print(f"  Validation F1 Score (Vessel): {valid_metrics['valid/F1_vessel']:.4f}")
         return
 
     def test_step(self, batch, batch_idx):
@@ -242,6 +264,18 @@ class VesselDetectModel(pl.LightningModule):
     def on_test_epoch_end(self):
         self.shared_epoch_end(self.test_step_outputs, "test")
         self.test_step_outputs.clear() # empty set output list
+
+        # Print test metrics
+        test_metrics = self.trainer.callback_metrics
+        print(f"""
+        Test Metrics:
+        - Mean Accuracy (mAcc): {test_metrics['test/mAcc']:.4f}
+        - Per image IoU: {test_metrics['test/per_image_iou']:.4f}
+        - Dataset IoU: {test_metrics['test/dataset_iou']:.4f}
+        - IoU (Vessel): {test_metrics['test/IoU_vessel']:.4f}
+        - Mean F1 Score (mF1): {test_metrics['test/mF1']:.4f}
+        - F1 Score (Vessel): {test_metrics['test/F1_vessel']:.4f}
+        """)
         return
 
     def configure_optimizers(self):
@@ -257,9 +291,10 @@ class VesselDetectModel(pl.LightningModule):
         }
         return
 
-model = VesselDetectModel(config.architecture, config.encoder_name, in_channels=2, out_classes=1)
+model = VesselDetectModel(config.architecture, config.encoder_name, config.encoder_weights, config.use_pretrained, in_channels=2, out_classes=1)
 
-wandb_logger = WandbLogger(project="unet-vessel-detection", name=f"{config.dataset.__name__}-{config.architecture}-{config.encoder_name}")
+pretrained_status = "pretrained" if config.use_pretrained else "scratch"
+wandb_logger = WandbLogger(project="unet-vessel-detection", name=f"{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}")
 
 wandb_logger.log_hyperparams({
     "epochs": config.epochs,
@@ -280,10 +315,12 @@ if config.train_model:
         val_dataloaders=val_loader
     )
     # Save the trained model
-    torch.save(model.state_dict(), "vessel_detect_model.pth")
+    pretrained_status = "pretrained" if config.use_pretrained else "scratch"
+    torch.save(model.state_dict(), f"vessel_detect_model_{config.dataset.__name__}_{pretrained_status}.pth")
 else:
     # Load the saved model
-    model.load_state_dict(torch.load("vessel_detect_model.pth"))
+    pretrained_status = "pretrained" if config.use_pretrained else "scratch"
+    model.load_state_dict(torch.load(f"vessel_detect_model_{config.dataset.__name__}_{pretrained_status}.pth"))
     model.eval()  # Set the model to evaluation mode
 
 # run validation dataset
@@ -292,25 +329,6 @@ valid_metrics = trainer.validate(model, dataloaders=val_loader, verbose=False)
 # run test dataset
 test_metrics = trainer.test(model, dataloaders=test_loader, verbose=False)
 
-print(f"""
-Validation Metrics:
-- Loss: {valid_metrics[0]["valid_loss"]}
-- Per image IoU: {valid_metrics[0]["valid_per_image_iou"]}
-- Dataset IoU: {valid_metrics[0]["valid_dataset_iou"]}
-- Mean Accuracy (mAcc): {valid_metrics[0]["valid_mAcc"]}
-- IoU (Vessel): {valid_metrics[0]["valid_IoU_vessel"]}
-- Mean F1 Score (mF1): {valid_metrics[0]["valid_mF1"]}
-- F1 Score (Vessel): {valid_metrics[0]["valid_F1_vessel"]}
-
-Test Metrics:
-- Per image IoU: {test_metrics[0]["test_per_image_iou"]}
-- Dataset IoU: {test_metrics[0]["test_dataset_iou"]}
-- Mean Accuracy (mAcc): {test_metrics[0]["test_mAcc"]}
-- IoU (Vessel): {test_metrics[0]["test_IoU_vessel"]}
-- Mean F1 Score (mF1): {test_metrics[0]["test_mF1"]}
-- F1 Score (Vessel): {test_metrics[0]["test_F1_vessel"]}
-""")
-
 # result visualization
 batch = next(iter(test_loader))
 images, masks = batch
@@ -318,7 +336,7 @@ with torch.no_grad():
     model.eval()
     logits = model(images)
 pr_masks = logits.sigmoid()
-os.makedirs(f"predictions_{config.dataset.__name__}", exist_ok=True)
+os.makedirs(f"output/predictions_{config.dataset.__name__}", exist_ok=True)
 for idx, (image, gt_mask, pr_mask) in enumerate(
     zip(images, masks, pr_masks)
 ):
@@ -350,7 +368,7 @@ for idx, (image, gt_mask, pr_mask) in enumerate(
         plt.title("Prediction")
         plt.axis("off")
 
-        plt.savefig(f"predictions/prediction{idx}.png")
+        plt.savefig(f"output/predictions_{config.dataset.__name__}/prediction{idx}.png")
     else:
         break
 
