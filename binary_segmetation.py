@@ -19,6 +19,7 @@ from segmentation_models_pytorch.datasets import SimpleOxfordPetDataset
 from datasets.GRDvessel_dataset import VesselDetectGRDDataset
 from datasets.HRSIDvessel_dataset import VesselDetectHRSIDDataset
 from dataclasses import dataclass
+from losses import BinarySeesawLoss 
 
 @dataclass
 class Config:
@@ -32,7 +33,8 @@ class Config:
     use_pretrained: bool = True
     in_channels: int = 2
     out_classes: int = 1
-    dataset: type = VesselDetectHRSIDDataset # VesselDetectHRSIDDataset or VesselDetectGRDDataset
+    loss: str = "seesaw" # Options: dice, focal, seesaw, 
+    dataset: type = VesselDetectHRSIDDataset # Options: VesselDetectHRSIDDataset, VesselDetectGRDDataset
 
 config = Config()
 
@@ -107,7 +109,7 @@ for i in range(5):
     plt.savefig(f"output/samples_{config.dataset.__name__}/sample{i}.png")
 
 class VesselDetectModel(pl.LightningModule):
-    def __init__(self, arch,  encoder_name, encoder_weights, use_pretrained, in_channels, out_classes, **kwargs):
+    def __init__(self, arch,  encoder_name, encoder_weights, use_pretrained, in_channels, out_classes, loss, **kwargs):
         super().__init__() 
         self.model = smp.create_model(
             arch,
@@ -123,7 +125,15 @@ class VesselDetectModel(pl.LightningModule):
         self.register_buffer("mean", torch.tensor(params["mean"][:2]).view(1, 2, 1, 1))
 
         # for image segmentation dice loss could be the best first choice
-        self.loss_fn = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
+        if loss == "dice":
+            self.loss_fn = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
+        elif loss == "focal":
+            self.loss_fn = smp.losses.FocalLoss(smp.losses.BINARY_MODE)
+        elif loss == "seesaw":
+            criterion = BinarySeesawLoss(p=0.8, q=2.0)
+            self.loss_fn = criterion
+        else:
+            raise ValueError(f"Unsupported loss function: {loss}")
 
         # initialize step metics
         self.training_step_outputs = []
@@ -169,6 +179,16 @@ class VesselDetectModel(pl.LightningModule):
             "tn": tn,
         }
     
+    def compute_siou(self, tp, fp, fn, tn, iou, gamma=0.5, kappa=torch.sqrt(torch.tensor(2.0))):
+        total_pixels = tp + fp + fn + tn
+        A = tp + fn # ground truth: tp = correct predictions, fn = missed positives 
+        B = tp + fp # predictions: tp = correct predictions, fp = false positives
+        s = A + B
+        s_norm = s / total_pixels
+        p_val = 1 - gamma * torch.exp(-torch.sqrt(s_norm/(2*kappa)))
+        siou = iou ** p_val
+        return siou
+
     def shared_epoch_end(self, outputs, stage):
         # aggregate step metrics
         tp = torch.cat([x["tp"] for x in outputs])
@@ -179,11 +199,23 @@ class VesselDetectModel(pl.LightningModule):
         # per image IoU: first calculate IoU score for each image and then compute mean over these scores
         per_image_iou = smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro-imagewise")
 
-        # dataset IoU: aggregate intersection and union over all images and then compute IoU score
+        # dataset IoU: aggregate intersection and union over all images and then compute IoU score (most common)
         dataset_iou = smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro")
+
+        # Compute aggregated totals for SIoU
+        tp_total = tp.sum()
+        fp_total = fp.sum()
+        fn_total = fn.sum()
+        tn_total = tn.sum()        
+
+        # Calculate SIoU for the overall dataset IoU.
+        dataset_siou = self.compute_siou(tp_total, fp_total, fn_total, tn_total, dataset_iou)
 
          # IoU for the vessel class (binary IoU)
         vessel_iou = smp.metrics.iou_score(tp, fp, fn, tn, reduction="none")[1]  # Index 1 corresponds to the vessel class
+
+        # Optionally, calculate SIoU for the vessel IoU
+        vessel_siou = self.compute_siou(tp_total, fp_total, fn_total, tn_total, vessel_iou)
 
         # Mean Accuracy (mAcc): mean of pixel-wise accuracy across all images
         mAcc = smp.metrics.accuracy(tp, fp, fn, tn, reduction="micro")
@@ -198,8 +230,10 @@ class VesselDetectModel(pl.LightningModule):
         metrics = {
             f"{stage}/per_image_iou": per_image_iou,
             f"{stage}/dataset_iou": dataset_iou,
+            f"{stage}/dataset_siou": dataset_siou,
+            f"{stage}/vessel_iou": vessel_iou,
+            f"{stage}/vessel_siou": vessel_siou,    
             f"{stage}/mAcc": mAcc,
-            f"{stage}/IoU_vessel": vessel_iou,
             f"{stage}/mF1": mF1,
             f"{stage}/F1_vessel": vessel_f1,
         }
@@ -209,8 +243,10 @@ class VesselDetectModel(pl.LightningModule):
         # Log metrics individually
         self.log(f"{stage}/per_image_iou", per_image_iou, prog_bar=True, on_epoch=True)
         self.log(f"{stage}/dataset_iou", dataset_iou, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/dataset_siou", dataset_siou, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/vessel_iou", vessel_iou, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/vessel_siou", vessel_siou, prog_bar=True, on_epoch=True)
         self.log(f"{stage}/mAcc", mAcc, prog_bar=True, on_epoch=True)
-        self.log(f"{stage}/IoU_vessel", vessel_iou, prog_bar=True, on_epoch=True)
         self.log(f"{stage}/mF1", mF1, prog_bar=True, on_epoch=True)
         self.log(f"{stage}/F1_vessel", vessel_f1, prog_bar=True, on_epoch=True)
 
@@ -230,7 +266,9 @@ class VesselDetectModel(pl.LightningModule):
         print(f"  Train Mean Accuracy (mAcc): {train_metrics['train/mAcc']:.4f}")
         print(f"  Train Per Image IoU: {train_metrics['train/per_image_iou']:.4f}")
         print(f"  Train Dataset IoU: {train_metrics['train/dataset_iou']:.4f}")
-        print(f"  Train IoU (Vessel): {train_metrics['train/IoU_vessel']:.4f}")
+        print(f"  Train Dataset SIoU: {train_metrics['train/dataset_siou']:.4f}")
+        print(f"  Train Vessel IoU: {train_metrics['train/vessel_iou']:.4f}")
+        print(f"  Train Vessel SIoU: {train_metrics['train/vessel_siou']:.4f}")
         print(f"  Train Mean F1 Score (mF1): {train_metrics['train/mF1']:.4f}")
         print(f"  Train F1 Score (Vessel): {train_metrics['train/F1_vessel']:.4f}")
         return
@@ -251,7 +289,9 @@ class VesselDetectModel(pl.LightningModule):
         print(f"  Validation Mean Accuracy (mAcc): {valid_metrics['valid/mAcc']:.4f}")
         print(f"  Validation Per Image IoU: {valid_metrics['valid/per_image_iou']:.4f}")
         print(f"  Validation Dataset IoU: {valid_metrics['valid/dataset_iou']:.4f}")
-        print(f"  Validation IoU (Vessel): {valid_metrics['valid/IoU_vessel']:.4f}")
+        print(f"  Validation Dataset SIoU: {valid_metrics['valid/dataset_siou']:.4f}")
+        print(f"  Validation Vessel IoU: {valid_metrics['valid/vessel_iou']:.4f}")
+        print(f"  Validation Vessel SIoU: {valid_metrics['valid/vessel_siou']:.4f}")
         print(f"  Validation Mean F1 Score (mF1): {valid_metrics['valid/mF1']:.4f}")
         print(f"  Validation F1 Score (Vessel): {valid_metrics['valid/F1_vessel']:.4f}")
         return
@@ -272,7 +312,9 @@ class VesselDetectModel(pl.LightningModule):
         - Mean Accuracy (mAcc): {test_metrics['test/mAcc']:.4f}
         - Per image IoU: {test_metrics['test/per_image_iou']:.4f}
         - Dataset IoU: {test_metrics['test/dataset_iou']:.4f}
-        - IoU (Vessel): {test_metrics['test/IoU_vessel']:.4f}
+        - Dataset SIoU: {test_metrics['test/dataset_siou']:.4f}
+        - Vessel IoU: {test_metrics['test/vessel_iou']:.4f}
+        - Vessel SIoU: {test_metrics['test/vessel_siou']:.4f}
         - Mean F1 Score (mF1): {test_metrics['test/mF1']:.4f}
         - F1 Score (Vessel): {test_metrics['test/F1_vessel']:.4f}
         """)
@@ -291,10 +333,17 @@ class VesselDetectModel(pl.LightningModule):
         }
         return
 
-model = VesselDetectModel(config.architecture, config.encoder_name, config.encoder_weights, config.use_pretrained, in_channels=2, out_classes=1)
+model = VesselDetectModel(
+    config.architecture, 
+    config.encoder_name, 
+    config.encoder_weights, 
+    config.use_pretrained, 
+    config.in_channels,
+    config.out_classes,
+    config.loss)
 
 pretrained_status = "pretrained" if config.use_pretrained else "scratch"
-wandb_logger = WandbLogger(project="unet-vessel-detection", name=f"{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}")
+wandb_logger = WandbLogger(project="loss-unet-vessel-detection", name=f"{config.loss}-{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}")
 
 wandb_logger.log_hyperparams({
     "epochs": config.epochs,
@@ -314,13 +363,16 @@ if config.train_model:
         train_dataloaders=train_loader,
         val_dataloaders=val_loader
     )
+    # Ensure the 'models' directory exists
+    os.makedirs("models", exist_ok=True)
+    
     # Save the trained model
     pretrained_status = "pretrained" if config.use_pretrained else "scratch"
-    torch.save(model.state_dict(), f"vessel_detect_model_{config.dataset.__name__}_{pretrained_status}.pth")
+    torch.save(model.state_dict(), f"models/vessel_detect_model_{config.loss}-{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}.pth")
 else:
     # Load the saved model
     pretrained_status = "pretrained" if config.use_pretrained else "scratch"
-    model.load_state_dict(torch.load(f"vessel_detect_model_{config.dataset.__name__}_{pretrained_status}.pth"))
+    model.load_state_dict(torch.load(f"models/vessel_detect_model_{config.loss}-{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}.pth"))
     model.eval()  # Set the model to evaluation mode
 
 # run validation dataset
