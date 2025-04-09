@@ -60,17 +60,3 @@ sweep_config = {
             "max": 2.0
         }
     }
-
-config = Config(
-    learning_rate=wandb.config.get("learning_rate", 2e-4),
-    batch_size=wandb.config.get("batch_size", 16),
-    seesaw_p=wandb.config.get("seesaw_p", 0.8),
-    seesaw_q=wandb.config.get("seesaw_q", 2.0),
-    tversky_alpha=wandb.config.get("tversky_alpha", 0.3),
-    tversky_beta=wandb.config.get("tversky_beta", 0.7),
-    dice_weight=wandb.config.get("dice_weight", 0.5),
-    seesaw_weight=wandb.config.get("seesaw_weight", 0.5),
-    focal_alpha=wandb.config.get("focal_alpha", 75),
-    focal_gamma=wandb.config.get("focal_gamma", 1),
-    focal_beta=wandb.config.get("focal_beta", 2),
-)

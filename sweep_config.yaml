@@ -1,13 +1,13 @@
 program: binary_segmentation.py
 method: bayes
+project: dice_sweep
 metric:
   name: valid_loss
   goal: minimize
 parameters:
-  learning rate:
+  learning_rate:
     distribution: uniform
     min: 0.0001
     max: 0.01
-  batch size:
-    distribution: choice
+  batch_size:
     values: [8, 16, 32]

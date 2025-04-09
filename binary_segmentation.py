@@ -22,8 +22,6 @@ from dataclasses import dataclass
 from losses import BinarySeesawLoss, WeightedsumDiceSeesaw, FocalComboLoss
 
 import argparse
-# import wandb
-# wandb.init()
 
 @dataclass
 class Config:
