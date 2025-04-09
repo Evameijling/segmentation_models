@@ -1,0 +1,20 @@
+srun --partition=gpu_a100 --gres=gpu:1 --job-name=bash --ntasks=1 --cpus-per-task=12 --time=00:10:00 --pty bash
+source /home/egmelich/segmentation_models/seg_venv/bin/activate
+source /home/egmelich/FMforSAR/venv/bin/activate
+
+# Check info on account
+accinfo
+
+# Check quota
+myquota
+myquota /projects/0/prjs1235 
+
+# Project space
+cd /projects/0/prjs1235 
+Geofen data: /projects/0/prjs1235/data_for_keras_aug 
+
+# Check running processes
+pgrep -u egmelich
+
+scp -r egmelich@snellius.surf.nl:/projects/0/prjs1235/DynamicWorld_GEEData/masks_test_S2 /Users/evagmelichmeijling/WetlandsNetherlands_Sentinel2DynamicWorld
+

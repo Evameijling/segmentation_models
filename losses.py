@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import segmentation_models_pytorch as smp
 
 class BinarySeesawLoss(nn.Module):
     """
@@ -92,3 +93,83 @@ class BinarySeesawLoss(nn.Module):
         loss = loss_vessel + loss_background
         
         return loss.mean()
+    
+
+class WeightedsumDiceSeesaw(nn.Module):
+    def __init__(self, dice_weight=0.5, seesaw_weight=0.5, p=0.8, q=2.0):
+        """
+        Initialize the combined loss function.
+        Args:
+            dice_weight (float): Weight for the Dice Loss.
+            seesaw_weight (float): Weight for the Seesaw Loss.
+            p (float): Parameter for the Seesaw Loss.
+            q (float): Parameter for the Seesaw Loss.
+        """
+        super().__init__()
+        self.dice_loss = smp.losses.DiceLoss(smp.losses.BINARY_MODE, from_logits=True)
+        self.seesaw_loss = BinarySeesawLoss(p=p, q=q)
+        self.dice_weight = dice_weight
+        self.seesaw_weight = seesaw_weight
+
+    def forward(self, logits, targets):
+        """
+        Compute the combined loss.
+        Args:
+            logits (torch.Tensor): Predicted logits.
+            targets (torch.Tensor): Ground truth masks.
+        Returns:
+            torch.Tensor: Combined loss value.
+        """
+        dice = self.dice_loss(logits, targets)
+        seesaw = self.seesaw_loss(logits, targets)
+        combined_loss = self.dice_weight * dice + self.seesaw_weight * seesaw
+        return combined_loss
+
+
+class FocalComboLoss(nn.Module):
+    def __init__(self, alpha=0.5, gamma=2.0, beta=1.0, weight=None):
+        """
+        Initialize the Focal Combo Loss.
+        Args:
+            alpha (float): Weighting factor for Focal Loss and Dice Loss combination. Default is 0.5.
+            gamma (float): Focusing parameter for Focal Loss. Default is 2.0.
+            beta (float): Parameter for the Dice/F1-based loss. Default is 1.0.
+            weight (torch.Tensor): Class weights for Focal Loss. Default is None.
+        """
+        super(FocalComboLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.beta = beta
+        self.weight = weight
+
+    def forward(self, logits, targets):
+        """
+        Compute the Focal Combo Loss.
+        Args:
+            logits (torch.Tensor): Predicted logits [B, 1, H, W].
+            targets (torch.Tensor): Ground truth labels [B, H, W] or [B, 1, H, W].
+        Returns:
+            torch.Tensor: Combined loss value.
+        """
+        if targets.ndim == 4 and targets.shape[1] == 1:
+            targets = targets.squeeze(1)  # Remove channel dimension if present
+
+        # Convert logits to probabilities
+        probs = torch.sigmoid(logits)
+        pt = probs * targets + (1 - probs) * (1 - targets)  # pt = P_t (probability for the true class)
+
+        # Focal Loss
+        focal_loss = -self.alpha * (1 - pt) ** self.gamma * torch.log(pt + 1e-6)
+        if self.weight is not None:
+            focal_loss = focal_loss * (self.weight[1] * targets + self.weight[0] * (1 - targets))
+        focal_loss = focal_loss.mean()
+
+        # Dice/F1-based Loss
+        tp = torch.sum(probs * targets)  # True positives
+        fp = torch.sum(probs * (1 - targets))  # False positives
+        fn = torch.sum((1 - probs) * targets)  # False negatives
+        dice_loss = 1 - (2 * tp / (2 * tp + fp + fn + 1e-6)) ** (1 / self.beta)
+
+        # Combine Focal Loss and Dice Loss
+        combined_loss = self.alpha * focal_loss + (1 - self.alpha) * dice_loss
+        return combined_loss

@@ -19,7 +19,11 @@ from segmentation_models_pytorch.datasets import SimpleOxfordPetDataset
 from datasets.GRDvessel_dataset import VesselDetectGRDDataset
 from datasets.HRSIDvessel_dataset import VesselDetectHRSIDDataset
 from dataclasses import dataclass
-from losses import BinarySeesawLoss 
+from losses import BinarySeesawLoss, WeightedsumDiceSeesaw, FocalComboLoss
+
+import argparse
+# import wandb
+# wandb.init()
 
 @dataclass
 class Config:
@@ -33,84 +37,48 @@ class Config:
     use_pretrained: bool = True
     in_channels: int = 2
     out_classes: int = 1
-    loss: str = "seesaw" # Options: dice, focal, seesaw, 
+    loss: str = "focalcomboloss" # Options: dice, focal, seesaw, weightedsum_diceseesaw, tversky, jaccard, crossentropy, weightedcrossentropy, focalcomboloss
     dataset: type = VesselDetectHRSIDDataset # Options: VesselDetectHRSIDDataset, VesselDetectGRDDataset
 
 config = Config()
 
-train_dataset = config.dataset(mode="train", use_sen1=True)
-if config.dataset == VesselDetectGRDDataset:
-    val_dataset = config.dataset(mode="validation", use_sen1=True)
-elif config.dataset == VesselDetectHRSIDDataset:
-    val_dataset = config.dataset(mode="valid", use_sen1=True)
-else:
-    raise ValueError("Unsupported dataset type in config.dataset")
-test_dataset = config.dataset(mode="test", use_sen1=True)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train a Vessel Detection Model")
+    parser.add_argument("--train_model", action="store_true", default=True,
+                        help="Flag to determine if the model should be trained, default = True")
+    parser.add_argument("--epochs", type=int, default=10,
+                        help="Number of training epochs, default = 10")
+    parser.add_argument("--batch_size", type=int, default=16,
+                        help="Batch size for training, default = 16")
+    parser.add_argument("--learning_rate", type=float, default=2e-4,
+                        help="Learning rate for optimization, default = 2e-4")
+    parser.add_argument("--architecture", type=str, default="unet",
+                        help="Model architecture to use, default = 'unet'")
+    parser.add_argument("--encoder_name", type=str, default="resnext50_32x4d",
+                        help="Encoder name, default = 'resnext50_32x4d'")
+    parser.add_argument("--encoder_weights", type=str, default="imagenet",
+                        help="Pretrained encoder weights, default = 'imagenet'")
+    parser.add_argument("--use_pretrained", action="store_true", default=True,
+                        help="Use pretrained weights, default = True")
+    parser.add_argument("--in_channels", type=int, default=2,
+                        help="Number of input channels, default = 2")
+    parser.add_argument("--out_classes", type=int, default=1,
+                        help="Number of output classes, default = 1")
+    parser.add_argument("--loss", type=str, default="seesaw",
+                        choices=['dice', 'focal', 'seesaw', 'weightedsum_diceseesaw',
+                                 'tversky', 'jaccard', 'crossentropy', 'weightedcrossentropy', 'focalcomboloss'],
+                        help="Loss function to be used, default = 'seesaw'")
+    parser.add_argument("--dataset", type=str, default="HRSID",
+                        choices=["HRSID", "GRD"],
+                        help="Dataset to use: 'HRSID' or 'GRD', default = 'HRSID'")
 
-images, masks = train_dataset[0]
-print("Images shape:", images.shape)
-print("Masks shape:", masks.shape)
-
-# It is a good practice to check datasets don`t intersects with each other
-assert set(test_dataset.sample_names).isdisjoint(set(train_dataset.sample_names))
-assert set(test_dataset.sample_names).isdisjoint(set(val_dataset.sample_names))
-assert set(train_dataset.sample_names).isdisjoint(set(val_dataset.sample_names))
-
-print("Length of training dataset:", len(train_dataset))
-print("Length of validation dataset:", len(val_dataset))
-print("Length of test dataset:", len(test_dataset))
-
-# n_cpu = os.cpu_count()
-n_cpu = 4
-
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=config.batch_size,
-    shuffle=True,
-    num_workers=n_cpu
-)
-val_loader = DataLoader(
-    train_dataset,
-    batch_size=config.batch_size,
-    shuffle=True,
-    num_workers=n_cpu
-)
-test_loader = DataLoader(
-    train_dataset,
-    batch_size=config.batch_size,
-    shuffle=True,
-    num_workers=n_cpu
-)
-
-T_MAX = config.batch_size * len(train_loader)
-
-# Visualize some samples
-os.makedirs(f"output/samples_{config.dataset.__name__}", exist_ok=True)
-for i in range(5):
-    image, mask = train_dataset[i]
-    plt.figure(figsize=(12, 4))  
-
-    # Visualize the first channel (e.g., VV)
-    plt.subplot(1, 3, 1)
-    plt.imshow(image[0].numpy(), cmap="gray")
-    plt.title("Channel 1 (VV)")
-
-    if image.shape[0] > 1:
-        # Visualize the second channel (e.g., VH)
-        plt.subplot(1, 3, 2)
-        plt.imshow(image[1].numpy(), cmap="gray")
-        plt.title("Channel 2 (VH)")
-
-    # Visualize the mask
-    plt.subplot(1, 3, 3)
-    plt.imshow(mask.squeeze().numpy(), cmap="gray")  # Remove the singleton dimension
-    plt.title("Mask")
-
-    plt.savefig(f"output/samples_{config.dataset.__name__}/sample{i}.png")
+    return parser.parse_args()
 
 class VesselDetectModel(pl.LightningModule):
-    def __init__(self, arch,  encoder_name, encoder_weights, use_pretrained, in_channels, out_classes, loss, **kwargs):
+    def __init__(self, arch,  encoder_name, encoder_weights, use_pretrained, in_channels, out_classes, loss, T_MAX, train_dataset, **kwargs):
         super().__init__() 
+        self.T_MAX = T_MAX
+        self.train_dataset = train_dataset
         self.model = smp.create_model(
             arch,
             encoder_name=encoder_name,
@@ -132,6 +100,19 @@ class VesselDetectModel(pl.LightningModule):
         elif loss == "seesaw":
             criterion = BinarySeesawLoss(p=0.8, q=2.0)
             self.loss_fn = criterion
+        elif loss == "tversky":
+            self.loss_fn = smp.losses.TverskyLoss(smp.losses.BINARY_MODE, from_logits=True, alpha=0.3, beta=0.7)
+        elif loss == "jaccard":
+            self.loss_fn = smp.losses.JaccardLoss(smp.losses.BINARY_MODE, from_logits=True)
+        elif loss == "crossentropy":
+            self.loss_fn = torch.nn.CrossEntropyLoss()
+        elif loss == "weightedcrossentropy":
+            class_weights = self.compute_class_weights(self.train_dataset).to(self.device)
+            self.loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=class_weights[1]) 
+        elif loss == "weightedsum_diceseesaw":
+            self.loss_fn = WeightedsumDiceSeesaw(dice_weight=0.5, seesaw_weight=0.5, p=0.8, q=2.0)
+        elif loss == "focalcomboloss":
+            self.loss_fn = FocalComboLoss(alpha=75, gamma=1, beta=2)
         else:
             raise ValueError(f"Unsupported loss function: {loss}")
 
@@ -140,12 +121,66 @@ class VesselDetectModel(pl.LightningModule):
         self.validation_step_outputs = []
         self.test_step_outputs = []
     
+    def compute_class_weights(self, dataset):
+        """
+        Compute class weights based on the dataset's class distribution.
+        Args:
+            dataset: The dataset object containing masks.
+        Returns:
+            torch.Tensor: Class weights for BCEWithLogitsLoss.
+        """
+        total_pixels = 0
+        vessel_pixels = 0
+
+        for _, mask in dataset:
+            total_pixels += mask.numel()
+            vessel_pixels += (mask == 1).sum().item()
+
+        background_pixels = total_pixels - vessel_pixels
+        weight_background = vessel_pixels / total_pixels
+        weight_vessel = background_pixels / total_pixels
+
+        return torch.tensor([weight_background, weight_vessel], dtype=torch.float32)
+
     def forward(self, image):
         # normalize image 
         image = (image - self.mean) / self.std
         mask = self.model(image)
         return mask 
     
+    def compute_siou(self, tp, fp, fn, tn, iou, gamma=0.5, kappa=torch.sqrt(torch.tensor(2.0))):
+        total_pixels = tp + fp + fn + tn
+        A = tp + fn # ground truth: tp = correct predictions, fn = missed positives 
+        B = tp + fp # predictions: tp = correct predictions, fp = false positives
+        s = A + B
+        s_norm = s / total_pixels
+        p_val = 1 - gamma * torch.exp(-torch.sqrt(s_norm/(2*kappa)))
+        siou = iou ** p_val
+        return siou
+
+    def relaxed_f1_score(self, pred_mask, true_mask, threshold=0.5):
+        """
+        Compute the relaxed F1 score.
+        Args:
+            pred_mask (torch.Tensor): Predicted mask [B, H, W]
+            true_mask (torch.Tensor): Ground truth mask [B, H, W]
+            threshold (float): Threshold for binary classification 
+        Returns:
+            float (torch.Tensor): Relaxed F1 score.
+        """
+        pred_mask = (pred_mask > threshold).float()
+        true_mask = (true_mask > threshold).float()
+        
+        relaxed_tp = torch.sum(pred_mask * true_mask)
+        relaxed_fp = torch.sum(pred_mask * (1 - true_mask))
+        relaxed_fn = torch.sum((1 - pred_mask) * true_mask)
+
+        precision = relaxed_tp / (relaxed_tp + relaxed_fp + 1e-6)
+        recall = relaxed_tp / (relaxed_tp + relaxed_fn + 1e-6)
+
+        relaxed_f1 = 2 * (precision * recall) / (precision + recall + 1e-6)
+        return relaxed_f1
+
     def shared_step(self, batch, stage):
         image, mask = batch
 
@@ -171,24 +206,19 @@ class VesselDetectModel(pl.LightningModule):
         tp, fp, fn, tn = smp.metrics.get_stats(
             pred_mask.long(), mask.long(), mode="binary"
         )
+
+        # Compute relaxed F1 score
+        relaxed_mf1 = self.relaxed_f1_score(prob_mask.squeeze(1), mask.squeeze(1), threshold=0.5)
+
         return {
             "loss": loss,
             "tp": tp,
             "fp": fp,
             "fn": fn,
             "tn": tn,
+            "relaxed_mf1": relaxed_mf1,
         }
     
-    def compute_siou(self, tp, fp, fn, tn, iou, gamma=0.5, kappa=torch.sqrt(torch.tensor(2.0))):
-        total_pixels = tp + fp + fn + tn
-        A = tp + fn # ground truth: tp = correct predictions, fn = missed positives 
-        B = tp + fp # predictions: tp = correct predictions, fp = false positives
-        s = A + B
-        s_norm = s / total_pixels
-        p_val = 1 - gamma * torch.exp(-torch.sqrt(s_norm/(2*kappa)))
-        siou = iou ** p_val
-        return siou
-
     def shared_epoch_end(self, outputs, stage):
         # aggregate step metrics
         tp = torch.cat([x["tp"] for x in outputs])
@@ -223,9 +253,16 @@ class VesselDetectModel(pl.LightningModule):
         # Mean F1 score (mF1): mean of F1 scores across all images
         mF1 = smp.metrics.f1_score(tp, fp, fn, tn, reduction="micro")
 
+        # Relaxed F1 score aggregated
+        relaxed_f1_scores = torch.stack([x["relaxed_mf1"] for x in outputs])
+        relaxed_mf1 = relaxed_f1_scores.mean()
+
         # F1 score for the vessel class
         vessel_f1 = smp.metrics.f1_score(tp, fp, fn, tn, reduction="none")[1]  # Index 1 corresponds to the vessel class
         
+        precision = smp.metrics.precision(tp, fp, fn, tn, reduction="micro")
+        recall = smp.metrics.recall(tp, fp, fn, tn, reduction="micro")
+
         # Log metrics
         metrics = {
             f"{stage}/per_image_iou": per_image_iou,
@@ -235,7 +272,10 @@ class VesselDetectModel(pl.LightningModule):
             f"{stage}/vessel_siou": vessel_siou,    
             f"{stage}/mAcc": mAcc,
             f"{stage}/mF1": mF1,
+            f"{stage}/relaxed_mf1": relaxed_mf1,
             f"{stage}/F1_vessel": vessel_f1,
+            f"{stage}/precision": precision,
+            f"{stage}/recall": recall,
         }
 
         self.log_dict(metrics, prog_bar=True)
@@ -248,7 +288,10 @@ class VesselDetectModel(pl.LightningModule):
         self.log(f"{stage}/vessel_siou", vessel_siou, prog_bar=True, on_epoch=True)
         self.log(f"{stage}/mAcc", mAcc, prog_bar=True, on_epoch=True)
         self.log(f"{stage}/mF1", mF1, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/relaxed_mf1", relaxed_mf1, prog_bar=True, on_epoch=True)
         self.log(f"{stage}/F1_vessel", vessel_f1, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/precision", precision, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/recall", recall, prog_bar=True, on_epoch=True)
 
     def training_step(self, batch, batch_idx):
         train_loss_info = self.shared_step(batch, "train")
@@ -270,7 +313,10 @@ class VesselDetectModel(pl.LightningModule):
         print(f"  Train Vessel IoU: {train_metrics['train/vessel_iou']:.4f}")
         print(f"  Train Vessel SIoU: {train_metrics['train/vessel_siou']:.4f}")
         print(f"  Train Mean F1 Score (mF1): {train_metrics['train/mF1']:.4f}")
+        print(f"  Train Relaxed Mean F1 Score (mF1): {train_metrics['train/relaxed_mf1']:.4f}")
         print(f"  Train F1 Score (Vessel): {train_metrics['train/F1_vessel']:.4f}")
+        print(f"  Train Precision: {train_metrics['train/precision']:.4f}")
+        print(f"  Train Recall: {train_metrics['train/recall']:.4f}")
         return
 
     def validation_step(self, batch, batch_idx):
@@ -293,7 +339,10 @@ class VesselDetectModel(pl.LightningModule):
         print(f"  Validation Vessel IoU: {valid_metrics['valid/vessel_iou']:.4f}")
         print(f"  Validation Vessel SIoU: {valid_metrics['valid/vessel_siou']:.4f}")
         print(f"  Validation Mean F1 Score (mF1): {valid_metrics['valid/mF1']:.4f}")
+        print(f"  Validation Relaxed Mean F1 Score (mF1): {valid_metrics['valid/relaxed_mf1']:.4f}")
         print(f"  Validation F1 Score (Vessel): {valid_metrics['valid/F1_vessel']:.4f}")
+        print(f"  Validation Precision: {valid_metrics['valid/precision']:.4f}")
+        print(f"  Validation Recall: {valid_metrics['valid/recall']:.4f}")
         return
 
     def test_step(self, batch, batch_idx):
@@ -316,13 +365,16 @@ class VesselDetectModel(pl.LightningModule):
         - Vessel IoU: {test_metrics['test/vessel_iou']:.4f}
         - Vessel SIoU: {test_metrics['test/vessel_siou']:.4f}
         - Mean F1 Score (mF1): {test_metrics['test/mF1']:.4f}
+        - Relaxed Mean F1 Score (mF1): {test_metrics['test/relaxed_mf1']:.4f}
         - F1 Score (Vessel): {test_metrics['test/F1_vessel']:.4f}
+        - Precision: {test_metrics['test/precision']:.4f}
+        - Recall: {test_metrics['test/recall']:.4f}
         """)
         return
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=config.learning_rate)
-        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_MAX, eta_min=1e-5)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.T_MAX, eta_min=1e-5)
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
@@ -333,94 +385,193 @@ class VesselDetectModel(pl.LightningModule):
         }
         return
 
-model = VesselDetectModel(
-    config.architecture, 
-    config.encoder_name, 
-    config.encoder_weights, 
-    config.use_pretrained, 
-    config.in_channels,
-    config.out_classes,
-    config.loss)
+def main():
+    args = parse_args()
 
-pretrained_status = "pretrained" if config.use_pretrained else "scratch"
-wandb_logger = WandbLogger(project="loss-unet-vessel-detection", name=f"{config.loss}-{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}")
+    if args.dataset == "HRSID":
+        dataset_class = VesselDetectHRSIDDataset
+    elif args.dataset == "GRD":
+        dataset_class = VesselDetectGRDDataset
+    else:
+        raise ValueError(f"Unsupported dataset type: {args.dataset}")
 
-wandb_logger.log_hyperparams({
-    "epochs": config.epochs,
-    "learning_rate": config.learning_rate,
-    "batch_size": config.batch_size,
-    "model_architecture": config.architecture,
-    "encoder_name": config.encoder_name,
-    "in_channels": config.in_channels,
-    "out_classes": config.out_classes
-})
-
-trainer = pl.Trainer(max_epochs=config.epochs, log_every_n_steps=1, logger=wandb_logger)
-
-if config.train_model:
-    trainer.fit(
-        model, 
-        train_dataloaders=train_loader,
-        val_dataloaders=val_loader
+    config = Config(
+        train_model=args.train_model,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        architecture=args.architecture,
+        encoder_name=args.encoder_name,
+        encoder_weights=args.encoder_weights,
+        use_pretrained=args.use_pretrained,
+        in_channels=args.in_channels,
+        out_classes=args.out_classes,
+        loss=args.loss,
+        dataset=dataset_class
     )
-    # Ensure the 'models' directory exists
-    os.makedirs("models", exist_ok=True)
-    
-    # Save the trained model
-    pretrained_status = "pretrained" if config.use_pretrained else "scratch"
-    torch.save(model.state_dict(), f"models/vessel_detect_model_{config.loss}-{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}.pth")
-else:
-    # Load the saved model
-    pretrained_status = "pretrained" if config.use_pretrained else "scratch"
-    model.load_state_dict(torch.load(f"models/vessel_detect_model_{config.loss}-{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}.pth"))
-    model.eval()  # Set the model to evaluation mode
 
-# run validation dataset
-valid_metrics = trainer.validate(model, dataloaders=val_loader, verbose=False)
+    train_dataset = config.dataset(mode="train", use_sen1=True)
+    if config.dataset == VesselDetectGRDDataset:
+        val_dataset = config.dataset(mode="validation", use_sen1=True)
+    elif config.dataset == VesselDetectHRSIDDataset:
+        val_dataset = config.dataset(mode="valid", use_sen1=True)
+    else:
+        raise ValueError("Unsupported dataset type in config.dataset")
+    test_dataset = config.dataset(mode="test", use_sen1=True)
 
-# run test dataset
-test_metrics = trainer.test(model, dataloaders=test_loader, verbose=False)
+    images, masks = train_dataset[0]
+    print("Images shape:", images.shape)
+    print("Masks shape:", masks.shape)
 
-# result visualization
-batch = next(iter(test_loader))
-images, masks = batch
-with torch.no_grad():
-    model.eval()
-    logits = model(images)
-pr_masks = logits.sigmoid()
-os.makedirs(f"output/predictions_{config.dataset.__name__}", exist_ok=True)
-for idx, (image, gt_mask, pr_mask) in enumerate(
-    zip(images, masks, pr_masks)
-):
-    if idx <= 4:
-        plt.figure(figsize=(15, 5))
+    # It is a good practice to check datasets don`t intersects with each other
+    assert set(test_dataset.sample_names).isdisjoint(set(train_dataset.sample_names))
+    assert set(test_dataset.sample_names).isdisjoint(set(val_dataset.sample_names))
+    assert set(train_dataset.sample_names).isdisjoint(set(val_dataset.sample_names))
+
+    print("Length of training dataset:", len(train_dataset))
+    print("Length of validation dataset:", len(val_dataset))
+    print("Length of test dataset:", len(test_dataset))
+
+    # n_cpu = os.cpu_count()
+    n_cpu = 4
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=n_cpu
+    )
+    val_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=n_cpu
+    )
+    test_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=n_cpu
+    )
+
+    # Visualize some samples
+    os.makedirs(f"output/samples_{config.dataset.__name__}", exist_ok=True)
+    for i in range(5):
+        image, mask = train_dataset[i]
+        plt.figure(figsize=(12, 4))  
 
         # Visualize the first channel (e.g., VV)
-        plt.subplot(1, 4, 1)
+        plt.subplot(1, 3, 1)
         plt.imshow(image[0].numpy(), cmap="gray")
         plt.title("Channel 1 (VV)")
-        plt.axis("off")
 
         if image.shape[0] > 1:
             # Visualize the second channel (e.g., VH)
-            plt.subplot(1, 4, 2)
+            plt.subplot(1, 3, 2)
             plt.imshow(image[1].numpy(), cmap="gray")
             plt.title("Channel 2 (VH)")
+
+        # Visualize the mask
+        plt.subplot(1, 3, 3)
+        plt.imshow(mask.squeeze().numpy(), cmap="gray")  # Remove the singleton dimension
+        plt.title("Mask")
+
+        plt.savefig(f"output/samples_{config.dataset.__name__}/sample{i}.png")
+
+    T_MAX = len(train_loader) * config.epochs
+
+    model = VesselDetectModel(
+        config.architecture, 
+        config.encoder_name, 
+        config.encoder_weights, 
+        config.use_pretrained, 
+        config.in_channels,
+        config.out_classes,
+        config.loss,
+        T_MAX=T_MAX,
+        train_dataset=train_dataset)
+
+    pretrained_status = "pretrained" if config.use_pretrained else "scratch"
+    wandb_logger = WandbLogger(project="loss-unet-vessel-detection", name=f"{config.loss}-{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}")
+
+    wandb_logger.log_hyperparams({
+        "epochs": config.epochs,
+        "learning_rate": config.learning_rate,
+        "batch_size": config.batch_size,
+        "model_architecture": config.architecture,
+        "encoder_name": config.encoder_name,
+        "in_channels": config.in_channels,
+        "out_classes": config.out_classes
+    })
+
+    trainer = pl.Trainer(max_epochs=config.epochs, log_every_n_steps=1, logger=wandb_logger)
+
+    if config.train_model:
+        trainer.fit(
+            model, 
+            train_dataloaders=train_loader,
+            val_dataloaders=val_loader
+        )
+        # Ensure the 'models' directory exists
+        os.makedirs("models", exist_ok=True)
+        
+        # Save the trained model
+        pretrained_status = "pretrained" if config.use_pretrained else "scratch"
+        torch.save(model.state_dict(), f"models/vessel_detect_model_{config.loss}-{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}.pth")
+    else:
+        # Load the saved model
+        pretrained_status = "pretrained" if config.use_pretrained else "scratch"
+        model.load_state_dict(torch.load(f"models/vessel_detect_model_{config.loss}-{config.dataset.__name__}-{config.architecture}-{config.encoder_name}-{pretrained_status}.pth"))
+        model.eval()  # Set the model to evaluation mode
+
+    # run validation dataset
+    valid_metrics = trainer.validate(model, dataloaders=val_loader, verbose=False)
+
+    # run test dataset
+    test_metrics = trainer.test(model, dataloaders=test_loader, verbose=False)
+
+    # result visualization
+    batch = next(iter(test_loader))
+    images, masks = batch
+    with torch.no_grad():
+        model.eval()
+        logits = model(images)
+    pr_masks = logits.sigmoid()
+    os.makedirs(f"output/predictions_{config.dataset.__name__}", exist_ok=True)
+    for idx, (image, gt_mask, pr_mask) in enumerate(
+        zip(images, masks, pr_masks)
+    ):
+        if idx <= 4:
+            plt.figure(figsize=(15, 5))
+
+            # Visualize the first channel (e.g., VV)
+            plt.subplot(1, 4, 1)
+            plt.imshow(image[0].numpy(), cmap="gray")
+            plt.title("Channel 1 (VV)")
             plt.axis("off")
 
-        # Visualize the ground truth mask
-        plt.subplot(1, 4, 3)
-        plt.imshow(gt_mask.numpy().squeeze(), cmap="gray")
-        plt.title("Ground Truth")
-        plt.axis("off")
+            if image.shape[0] > 1:
+                # Visualize the second channel (e.g., VH)
+                plt.subplot(1, 4, 2)
+                plt.imshow(image[1].numpy(), cmap="gray")
+                plt.title("Channel 2 (VH)")
+                plt.axis("off")
 
-        # Visualize the predicted mask
-        plt.subplot(1, 4, 4)
-        plt.imshow(pr_mask.numpy().squeeze(), cmap="gray")
-        plt.title("Prediction")
-        plt.axis("off")
+            # Visualize the ground truth mask
+            plt.subplot(1, 4, 3)
+            plt.imshow(gt_mask.numpy().squeeze(), cmap="gray")
+            plt.title("Ground Truth")
+            plt.axis("off")
 
-        plt.savefig(f"output/predictions_{config.dataset.__name__}/prediction{idx}.png")
-    else:
-        break
+            # Visualize the predicted mask
+            plt.subplot(1, 4, 4)
+            plt.imshow(pr_mask.numpy().squeeze(), cmap="gray")
+            plt.title("Prediction")
+            plt.axis("off")
 
+            plt.savefig(f"output/predictions_{config.dataset.__name__}/prediction{idx}.png")
+        else:
+            break
+        
+if __name__ == "__main__":
+    main()
