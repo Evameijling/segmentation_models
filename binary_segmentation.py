@@ -178,6 +178,17 @@ class VesselDetectModel(pl.LightningModule):
 
         relaxed_f1 = 2 * (precision * recall) / (precision + recall + 1e-6)
         return relaxed_f1
+    
+    def compute_soft_cm(self, tp, fp, fn, tn, siou):
+        """
+        Compute scale-aware tp, fp, fn, fn.
+        """
+        soft_tp = tp * siou
+        soft_fp = fp * (1 - siou)
+        soft_fn = fn * (1 - siou)
+        soft_tn = tn - soft_tp - soft_fp - soft_fn
+
+        return soft_tp, soft_fp, soft_fn, soft_tn
 
     def shared_step(self, batch, stage):
         image, mask = batch
@@ -205,6 +216,10 @@ class VesselDetectModel(pl.LightningModule):
             pred_mask.long(), mask.long(), mode="binary"
         )
 
+        siou = self.compute_siou(tp, fp, fn, tn, smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro"))
+
+        soft_tp, soft_fp, soft_fn, soft_tn = self.compute_soft_cm(tp, fp, fn, tn, siou)
+
         # Compute relaxed F1 score
         relaxed_mf1 = self.relaxed_f1_score(prob_mask.squeeze(1), mask.squeeze(1), threshold=0.5)
 
@@ -214,6 +229,10 @@ class VesselDetectModel(pl.LightningModule):
             "fp": fp,
             "fn": fn,
             "tn": tn,
+            "soft_tp": soft_tp,
+            "soft_fp": soft_fp,
+            "soft_fn": soft_fn,
+            "soft_tn": soft_tn,
             "relaxed_mf1": relaxed_mf1,
         }
     
@@ -223,6 +242,11 @@ class VesselDetectModel(pl.LightningModule):
         fp = torch.cat([x["fp"] for x in outputs])
         fn = torch.cat([x["fn"] for x in outputs])
         tn = torch.cat([x["tn"] for x in outputs])
+
+        soft_tp = torch.cat([x["soft_tp"] for x in outputs])
+        soft_fp = torch.cat([x["soft_fp"] for x in outputs])
+        soft_fn = torch.cat([x["soft_fn"] for x in outputs])
+        soft_tn = torch.cat([x["soft_tn"] for x in outputs])
 
         # per image IoU: first calculate IoU score for each image and then compute mean over these scores
         per_image_iou = smp.metrics.iou_score(tp, fp, fn, tn, reduction="micro-imagewise")

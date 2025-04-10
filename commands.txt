@@ -18,3 +18,10 @@ pgrep -u egmelich
 
 scp -r egmelich@snellius.surf.nl:/projects/0/prjs1235/DynamicWorld_GEEData/masks_test_S2 /Users/evagmelichmeijling/WetlandsNetherlands_Sentinel2DynamicWorld
 
+
+
+Run a sweep:
+tutorial: https://youtu.be/WZvG6hwxUEw?si=-CAFRzCR-GJHGq1q
+commmands:
+$ wandb sweep sweep_config.yaml
+$ wandb agent ... --count ...
