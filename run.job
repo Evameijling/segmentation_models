@@ -11,4 +11,5 @@
 # Activate the virtual environment
 source /home/egmelich/segmentation_models/seg_venv/bin/activate
 
-python /home/egmelich/segmentation_models/binary_segmentation.py --loss weightedcrossentropy
+# python /home/egmelich/segmentation_models/binary_segmentation.py 
+python /home/egmelich/segmentation_models/downloaddata.py

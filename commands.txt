@@ -1,4 +1,4 @@
-srun --partition=gpu_a100 --gres=gpu:1 --job-name=bash --ntasks=1 --cpus-per-task=12 --time=00:10:00 --pty bash
+srun --partition=gpu_a100 --gres=gpu:1 --job-name=bash --ntasks=1 --cpus-per-task=12 --time=00:30:00 --pty bash
 source /home/egmelich/segmentation_models/seg_venv/bin/activate
 source /home/egmelich/FMforSAR/venv/bin/activate
 
@@ -18,6 +18,8 @@ pgrep -u egmelich
 
 scp -r egmelich@snellius.surf.nl:/projects/0/prjs1235/DynamicWorld_GEEData/masks_test_S2 /Users/evagmelichmeijling/WetlandsNetherlands_Sentinel2DynamicWorld
 
+
+scp -r egmelich@snellius.surf.nl:/projects/0/prjs1235/FMforSAR/data/HRSIDSARships/masks/tile_416_416_P0023_600_1400_7800_8600_jpg.rf.7ec0aa04943b6f3fde3cadbd1ff92c78_mask.png /Users/evagmelichmeijling/Desktop/masks
 
 
 Run a sweep:

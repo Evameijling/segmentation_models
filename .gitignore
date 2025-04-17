@@ -12,3 +12,4 @@ seg_venv/
 unet-vessel-detection/
 jobfiles/
 loss-unet-vessel-detection/
+output_pairs/
