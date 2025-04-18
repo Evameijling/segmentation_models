@@ -13,3 +13,5 @@ unet-vessel-detection/
 jobfiles/
 loss-unet-vessel-detection/
 output_pairs/
+output_heatmap/
+heatmap_vesseldetection/
