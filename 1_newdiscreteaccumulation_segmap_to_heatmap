@@ -1,0 +1,105 @@
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+from datasets.HRSIDvessel_dataset import VesselDetectHRSIDDataset
+from scipy.ndimage import label, distance_transform_cdt
+from skimage.measure import regionprops
+from torch.utils.data import DataLoader
+from skimage.draw import polygon
+
+def accumulate_heatmap(mask,
+                       A_base=1.0,
+                       r_base=0.5,
+                       S_ref=500,     # reference area in pixels
+                       alpha=0.5,     # controls peak vs. size
+                       gamma=0.0      # controls spread vs. size; 0 = same for all
+                       ):
+    """
+    Generate a size‑adaptive heatmap from a binary mask.
+
+    Parameters
+    ----------
+    mask : 2D array of {0,1}
+        Binary segmentation of ships.
+    A_base : float
+        Base amplitude.
+    r_base : float in (0,1)
+        Base decay factor per chessboard‐distance step.
+    S_ref : float
+        Reference ship area (in pixels) for scaling.
+    alpha : float
+        Exponent for amplitude scaling: A_i = A_base*(S_ref/S_i)**alpha.
+    gamma : float
+        Exponent for decay scaling: r_i = r_base*(S_i/S_ref)**gamma.
+
+    Returns
+    -------
+    heatmap : 2D float array
+    """
+    labeled, n_comp = label(mask)
+    H = np.zeros_like(mask, dtype=float)
+
+    for i in range(1, n_comp+1):
+        region_mask = (labeled == i)
+        S_i = region_mask.sum()
+        if S_i == 0:
+            continue
+
+        # 1) amplitude scale
+        A_i = A_base * (S_ref / S_i)**alpha
+
+        # 2) decay scale
+        r_i = r_base * (S_i / S_ref)**gamma
+
+        # 3) distance transform (chessboard / 8‑connected)
+        d_i = distance_transform_cdt(~region_mask, metric='chessboard')
+
+        # 4) accumulate
+        H += A_i * (r_i ** d_i)
+
+    return heatmap
+
+if __name__ == "__main__":
+    # Example binary mask
+    binary_mask = np.zeros((200, 300), dtype=int)
+    binary_mask[50:70, 60:160] = 1   # large ship
+    binary_mask[120:130, 200:220] = 1  # small ship
+
+    # Generate heatmap
+    heatmap = accumulate_heatmap(binary_mask, base_value=1.0, decay_factors=(0.5, 0.25))
+
+    # # Display results
+    # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+
+    # # Show binary mask with pixel values
+    # ax1.imshow(binary_mask, cmap='gray')
+    # ax1.set_title('Binary Mask')
+    # ax1.axis('off')
+    # for i in range(binary_mask.shape[0]):
+    #     for j in range(binary_mask.shape[1]):
+    #         ax1.text(j, i, str(binary_mask[i, j]), ha='center', va='center', color='red')
+
+    # # Show heatmap with pixel values
+    # ax2.imshow(heatmap, cmap='hot')
+    # ax2.set_title('Accumulated Heatmap')
+    # ax2.axis('off')
+    # for i in range(heatmap.shape[0]):
+    #     for j in range(heatmap.shape[1]):
+    #         ax2.text(j, i, f"{heatmap[i, j]:.2f}", ha='center', va='center', color='white')
+
+    # Display results
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+    ax1.imshow(binary_mask, cmap='gray')
+    ax1.set_title('Binary Segmentation Mask')
+    ax1.axis('off')
+    
+    ax2.imshow(heatmap, cmap='hot')
+    ax2.set_title('Generated Heatmap')
+    ax2.axis('off')
+
+    # Save the figure
+    output_dir = "/home/egmelich/segmentation_models/newaccumulated_heatmaps"
+    os.makedirs(output_dir, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "heatmap.png"), dpi=300)

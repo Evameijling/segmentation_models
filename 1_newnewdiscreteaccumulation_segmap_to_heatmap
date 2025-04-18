@@ -1,0 +1,94 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import label, distance_transform_cdt, distance_transform_edt
+from skimage.measure import regionprops
+
+def accumulate_core_centroid_gradient(
+    mask,
+    A_base=1.0,
+    r_base=0.5,
+    S_ref=500,
+    alpha=0.5,
+    gamma=0.0,
+    D_max=50,
+    p_int=2.0
+):
+    """
+    Discrete‐accumulation variant with a true centroid‐based interior gradient.
+    """
+    labeled, n_comp = label(mask)
+    H = np.zeros_like(mask, dtype=float)
+
+    for reg in regionprops(labeled):
+        S_i = reg.area
+        if S_i == 0:
+            continue
+
+        # 1) size‐adaptive peak & decay
+        A_i = A_base * (S_ref / S_i)**alpha
+        r_i = r_base * (S_i / S_ref)**gamma
+
+        # 2) crop bbox + padding
+        minr, minc, maxr, maxc = reg.bbox
+        pad = int(min(D_max, max(1, np.ceil(np.log(1e-3)/np.log(r_i)))))
+        cy, cx = reg.centroid
+        rmin = max(0, int(np.floor(cy)) - pad)
+        rmax = min(mask.shape[0], int(np.ceil (cy)) + pad + 1)
+        cmin = max(0, int(np.floor(cx)) - pad)
+        cmax = min(mask.shape[1], int(np.ceil (cx)) + pad + 1)
+
+        sub_lab = labeled[rmin:rmax, cmin:cmax]
+        region_mask = (sub_lab == reg.label)
+        H_crop = np.zeros_like(region_mask, dtype=float)
+
+        # 3) interior: distance *from* centroid
+        ys, xs = np.indices(region_mask.shape)
+        ys = ys + rmin;  xs = xs + cmin    # absolute coords
+        d_c = np.hypot(ys - cy, xs - cx)
+        d_c_max = d_c[region_mask].max() or 1.0
+        w_in = 1 - (d_c / d_c_max)**p_int
+
+        # 4) exterior: discrete decay
+        d_out = distance_transform_cdt(~region_mask, metric='chessboard')
+        d_out = np.minimum(d_out, D_max).astype(int)
+        lut   = r_i**np.arange(D_max+1)
+        w_out = lut[d_out]
+
+        # 5) assemble
+        H_crop[ region_mask] = A_i * w_in[ region_mask]
+        H_crop[~region_mask] = A_i * w_out[~region_mask]
+
+        H[rmin:rmax, cmin:cmax] += H_crop
+
+    return H
+
+if __name__ == "__main__":
+    # toy mask
+    binary_mask = np.zeros((200, 300), dtype=int)
+    binary_mask[50:70,   60:160] = 1   # large ship
+    binary_mask[120:130,200:220] = 1   # small ship
+
+    H = accumulate_core_centroid_gradient(
+        binary_mask,
+        A_base=1.0,
+        r_base=0.6,
+        S_ref=500,
+        alpha=0.7,
+        gamma=0.2,
+        D_max=40,
+        p_int=2.5
+    )
+    H /= H.max()
+
+    fig, (ax1, ax2) = plt.subplots(1,2,figsize=(10,5))
+    ax1.imshow(binary_mask, cmap='gray')
+    ax1.set_title("Mask"); ax1.axis('off')
+    ax2.imshow(H, cmap='hot')
+    ax2.set_title("Core‑gradient Heatmap"); ax2.axis('off')
+
+    # Save the figure
+    output_dir = "/home/egmelich/segmentation_models/newnewaccumulated_heatmaps"
+    os.makedirs(output_dir, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "heatmap.png"))
