@@ -1,11 +1,10 @@
 import numpy as np
 from scipy.ndimage import label, distance_transform_edt, gaussian_filter
 import os
-from skimage.draw import polygon
 
 def segmentation_to_heatmap(
     bin_mask: np.ndarray,
-    sigma_factor: float = 0.1,
+    sigma_factor: float = 0.02,
     weight_exponent: float = 0.5,
     normalize: bool = True
 ) -> np.ndarray:
@@ -73,31 +72,13 @@ def segmentation_to_heatmap(
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    # Example binary mask
-    mask = np.zeros((200, 300), dtype=int)
-    mask[50:70, 60:160] = 1   # large ship
-    mask[120:130, 200:220] = 1  # small ship
-    # rotated ship (30°)
-    angle = np.deg2rad(30)
-    length, width = 50, 10
-    cx, cy = 100, 100
-    dx, dy = length/2, width/2
-    # rectangle corners centered at (0,0)
-    corners = np.array([[-dx, -dy],
-                        [ dx, -dy],
-                        [ dx,  dy],
-                        [-dx,  dy]])
-    # rotation matrix
-    R = np.array([[ np.cos(angle), -np.sin(angle)],
-                  [ np.sin(angle),  np.cos(angle)]])
-    rot_corners = corners.dot(R.T)
-    xs = rot_corners[:,0] + cx
-    ys = rot_corners[:,1] + cy
-    rr, cc = polygon(ys, xs, mask.shape)
-    mask[rr, cc] = 1
+    # create a toy mask: two rectangles of different sizes
+    mask = np.zeros((200, 200), dtype=bool)
+    mask[20:60, 30:80] = True      # small vessel
+    mask[100:180, 50:150] = True   # large vessel
 
     heat = segmentation_to_heatmap(mask,
-                                   sigma_factor=0.5,
+                                   sigma_factor=0.015,
                                    weight_exponent=0.4)
 
     # display
@@ -111,7 +92,7 @@ if __name__ == "__main__":
     ax1.axis('off')
 
     # Save the figure
-    output_dir = "/home/egmelich/segmentation_models/gaussiankernel_heatmaps"
+    output_dir = "/home/egmelich/segmentation_models/test"
     os.makedirs(output_dir, exist_ok=True)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "heatmap.png"), dpi=300)

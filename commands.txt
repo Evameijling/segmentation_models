@@ -1,4 +1,4 @@
-srun --partition=gpu_a100 --gres=gpu:1 --job-name=bash --ntasks=1 --cpus-per-task=12 --time=00:30:00 --pty bash
+srun --partition=gpu_a100 --gres=gpu:1 --job-name=bash --ntasks=1 --cpus-per-task=12 --time=00:10:00 --pty bash
 source /home/egmelich/segmentation_models/seg_venv/bin/activate
 source /home/egmelich/FMforSAR/venv/bin/activate
 

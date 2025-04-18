@@ -1,0 +1,84 @@
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+from datasets.HRSIDvessel_dataset import VesselDetectHRSIDDataset
+from scipy.ndimage import label
+from skimage.measure import regionprops
+from torch.utils.data import DataLoader
+from skimage.draw import polygon
+
+def accumulate_heatmap(mask, base_value=1.0, decay_factor=0.5, max_distance=3):
+    """
+    Generate a heatmap by accumulating values based on connectivity levels.
+
+    Parameters:
+    - mask: 2D numpy array of shape (H, W), with binary values (0 background, 1 ship)
+    - base_value: Value to add to the core pixels (value=1 in the mask)
+    - decay_factor: Decay factor for each level of connectivity
+    - max_distance: Maximum number of connectivity levels to consider
+
+    Returns:
+    - heatmap: 2D numpy array of floats, same shape as mask
+    """
+    # Label connected components in the mask
+    labeled, _ = label(mask)
+    heatmap = np.zeros_like(mask, dtype=float)
+
+    # Iterate over each connected component
+    for region_label in np.unique(labeled):
+        if region_label == 0:  # Skip background
+            continue
+
+        # Create a binary mask for the current connected component
+        region_mask = (labeled == region_label).astype(float)
+
+        # Add values to the heatmap based on connectivity levels
+        for distance in range(max_distance + 1):
+            # Identify pixels at the current distance
+            distance_mask = (region_mask > 0).astype(float)
+            heatmap += base_value * (decay_factor ** distance) * distance_mask
+
+            # Expand the region mask to the next connectivity level
+            region_mask = np.pad(region_mask, pad_width=1, mode='constant', constant_values=0)
+            region_mask = (
+                region_mask[:-2, :-2] + region_mask[:-2, 1:-1] + region_mask[:-2, 2:] +
+                region_mask[1:-1, :-2] + region_mask[1:-1, 2:] +
+                region_mask[2:, :-2] + region_mask[2:, 1:-1] + region_mask[2:, 2:]
+            )
+            region_mask = (region_mask > 0).astype(float)
+
+    return heatmap
+
+# Example binary mask
+binary_mask = np.zeros((10, 10), dtype=int)
+binary_mask[2:4, 2:4] = 1  # Small ship
+binary_mask[6:9, 6:9] = 1  # Larger ship
+
+# Generate heatmap
+heatmap = accumulate_heatmap(binary_mask, base_value=1.0, decay_factor=0.5, max_distance=3)
+
+# Display results
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+
+# Show binary mask with pixel values
+ax1.imshow(binary_mask, cmap='gray')
+ax1.set_title('Binary Mask')
+ax1.axis('off')
+for i in range(binary_mask.shape[0]):
+    for j in range(binary_mask.shape[1]):
+        ax1.text(j, i, str(binary_mask[i, j]), ha='center', va='center', color='red')
+
+# Show heatmap with pixel values
+ax2.imshow(heatmap, cmap='hot')
+ax2.set_title('Accumulated Heatmap')
+ax2.axis('off')
+for i in range(heatmap.shape[0]):
+    for j in range(heatmap.shape[1]):
+        ax2.text(j, i, f"{heatmap[i, j]:.2f}", ha='center', va='center', color='white')
+
+# Save the figure
+output_dir = "/home/egmelich/segmentation_models/accumulated_heatmaps"
+os.makedirs(output_dir, exist_ok=True)
+plt.tight_layout()
+plt.savefig(os.path.join(output_dir, "heatmap.png"), dpi=300)

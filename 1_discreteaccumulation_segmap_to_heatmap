@@ -1,84 +1,96 @@
-import os
-
-import matplotlib.pyplot as plt
 import numpy as np
-from datasets.HRSIDvessel_dataset import VesselDetectHRSIDDataset
-from scipy.ndimage import label
-from skimage.measure import regionprops
-from torch.utils.data import DataLoader
+from scipy.ndimage import label, distance_transform_edt
+import os
 from skimage.draw import polygon
 
-def accumulate_heatmap(mask, base_value=1.0, decay_factor=0.5, max_distance=3):
+def segmentation_to_heatmap(
+    bin_mask: np.ndarray,
+    decay_factor: float = 0.6,
+    weight_exponent: float = 0.5,
+    normalize: bool = True,
+    min_contrib: float = 1e-3
+) -> np.ndarray:
     """
-    Generate a heatmap by accumulating values based on connectivity levels.
+    Discrete accumulation *starting at each ship’s center*.
 
-    Parameters:
-    - mask: 2D numpy array of shape (H, W), with binary values (0 background, 1 ship)
-    - base_value: Value to add to the core pixels (value=1 in the mask)
-    - decay_factor: Decay factor for each level of connectivity
-    - max_distance: Maximum number of connectivity levels to consider
-
-    Returns:
-    - heatmap: 2D numpy array of floats, same shape as mask
+    For each ship:
+      - Compute amplitude A = area**(-weight_exponent).
+      - Compute Euclidean distance D = dist_to_border inside the ship.
+      - Quantize D_int = floor(D) → {0,1,…,maxD}.
+      - For ring_idx in [0..maxD]:
+          ring = (D_int == maxD - ring_idx)
+          heatmap[ring] += A * (decay_factor**ring_idx)
+      - Stop early when A*(decay_factor**ring_idx) < min_contrib.
     """
-    # Label connected components in the mask
-    labeled, _ = label(mask)
-    heatmap = np.zeros_like(mask, dtype=float)
+    labels, n_comp = label(bin_mask)
+    heatmap = np.zeros_like(bin_mask, dtype=float)
 
-    # Iterate over each connected component
-    for region_label in np.unique(labeled):
-        if region_label == 0:  # Skip background
+    for comp_id in range(1, n_comp+1):
+        comp = (labels == comp_id)
+        area = comp.sum()
+        if area == 0:
             continue
 
-        # Create a binary mask for the current connected component
-        region_mask = (labeled == region_label).astype(float)
+        # amplitude scales inversely with area
+        A = area ** (-weight_exponent)
 
-        # Add values to the heatmap based on connectivity levels
-        for distance in range(max_distance + 1):
-            # Identify pixels at the current distance
-            distance_mask = (region_mask > 0).astype(float)
-            heatmap += base_value * (decay_factor ** distance) * distance_mask
+        # distance‐to‐border (0 at edges, peaks at medial axis)
+        D = distance_transform_edt(comp)
+        D_int = np.floor(D).astype(int)
+        maxD = D_int.max()
 
-            # Expand the region mask to the next connectivity level
-            region_mask = np.pad(region_mask, pad_width=1, mode='constant', constant_values=0)
-            region_mask = (
-                region_mask[:-2, :-2] + region_mask[:-2, 1:-1] + region_mask[:-2, 2:] +
-                region_mask[1:-1, :-2] + region_mask[1:-1, 2:] +
-                region_mask[2:, :-2] + region_mask[2:, 1:-1] + region_mask[2:, 2:]
-            )
-            region_mask = (region_mask > 0).astype(float)
+        # accumulate inward rings
+        for ring_idx in range(maxD+1):
+            contrib = A * (decay_factor ** ring_idx)
+            if contrib < min_contrib:
+                break
+            level = maxD - ring_idx
+            ring_mask = (D_int == level)
+            heatmap[ring_mask] += contrib
+
+    # optional [0,1] rescale
+    if normalize:
+        vmin, vmax = heatmap.min(), heatmap.max()
+        if vmax > vmin:
+            heatmap = (heatmap - vmin) / (vmax - vmin)
 
     return heatmap
 
-# Example binary mask
-binary_mask = np.zeros((10, 10), dtype=int)
-binary_mask[2:4, 2:4] = 1  # Small ship
-binary_mask[6:9, 6:9] = 1  # Larger ship
+# Example demo
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
 
-# Generate heatmap
-heatmap = accumulate_heatmap(binary_mask, base_value=1.0, decay_factor=0.5, max_distance=3)
+    # build a toy mask
+    mask = np.zeros((200,300), int)
+    mask[50:70, 60:160] = 1
+    mask[120:130,200:220] = 1
+    # add a rotated rectangle
+    angle = np.deg2rad(30)
+    L, W, cx, cy = 50, 10, 100, 100
+    dx, dy = L/2, W/2
+    corners = np.array([[-dx,-dy],[ dx,-dy],[ dx, dy],[-dx, dy]])
+    R = np.array([[np.cos(angle), -np.sin(angle)],
+                  [np.sin(angle),  np.cos(angle)]])
+    rc = corners.dot(R.T)
+    ys, xs = rc[:,1]+cy, rc[:,0]+cx
+    rr, cc = polygon(ys, xs, mask.shape)
+    mask[rr, cc] = 1
 
-# Display results
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+    heat = segmentation_to_heatmap(
+        mask,
+        decay_factor=0.9,
+        weight_exponent=0.4,
+        normalize=True,
+        min_contrib=1e-4
+    )
 
-# Show binary mask with pixel values
-ax1.imshow(binary_mask, cmap='gray')
-ax1.set_title('Binary Mask')
-ax1.axis('off')
-for i in range(binary_mask.shape[0]):
-    for j in range(binary_mask.shape[1]):
-        ax1.text(j, i, str(binary_mask[i, j]), ha='center', va='center', color='red')
+    # show
+    fig, (ax0, ax1) = plt.subplots(1,2,figsize=(8,4))
+    ax0.imshow(mask, cmap='gray');   ax0.set_title("Binary mask"); ax0.axis('off')
+    ax1.imshow(heat, cmap='magma');  ax1.set_title("Center‑first rings"); ax1.axis('off')
 
-# Show heatmap with pixel values
-ax2.imshow(heatmap, cmap='hot')
-ax2.set_title('Accumulated Heatmap')
-ax2.axis('off')
-for i in range(heatmap.shape[0]):
-    for j in range(heatmap.shape[1]):
-        ax2.text(j, i, f"{heatmap[i, j]:.2f}", ha='center', va='center', color='white')
-
-# Save the figure
-output_dir = "/home/egmelich/segmentation_models/accumulated_heatmaps"
-os.makedirs(output_dir, exist_ok=True)
-plt.tight_layout()
-plt.savefig(os.path.join(output_dir, "heatmap.png"), dpi=300)
+    # Save the figure
+    output_dir = "/home/egmelich/segmentation_models/discreteaccumulation_heatmaps"
+    os.makedirs(output_dir, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "heatmap.png"), dpi=300)
