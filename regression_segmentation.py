@@ -39,10 +39,20 @@ class Config:
     loss: str
     dataset: type
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("Boolean value expected.")
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Vessel Detection Model")
-    parser.add_argument("--train_model", action="store_true", default=False,
-                        help="Flag to determine if the model should be trained, default = True")
+    parser.add_argument("--train_model", type=str2bool, default=False,
+                    help="Flag to determine if the model should be trained, default = False")
     parser.add_argument("--epochs", type=int, default=10,
                         help="Number of training epochs, default = 10")
     parser.add_argument("--batch_size", type=int, default=16,
@@ -116,6 +126,8 @@ class VesselDetectModel(pl.LightningModule):
         pred_heatmap = self.forward(image)
         loss = self.loss_fn(pred_heatmap, heatmap)
         mae = F.l1_loss(pred_heatmap, heatmap).item()
+        mse = F.mse_loss(pred_heatmap, heatmap).item()
+        rmse = torch.sqrt(F.mse_loss(pred_heatmap, heatmap)).item() 
 
         with torch.no_grad():
             pred_flat = pred_heatmap.view(pred_heatmap.size(0), -1)
@@ -126,22 +138,36 @@ class VesselDetectModel(pl.LightningModule):
             ]
             corr_mean = np.mean(corr)
 
-        return {"loss": loss, "mae": mae, "pearson_corr": corr_mean}
+            ss_total = torch.sum((heatmap_flat - heatmap_flat.mean(dim=1, keepdim=True)) ** 2, dim=1)
+            ss_residual = torch.sum((heatmap_flat - pred_flat) ** 2, dim=1)
+            r2 = 1 - (ss_residual / ss_total)
+            r2_mean = r2.mean().item()
+
+        return {"loss": loss, "mae": mae, "mse": mse, "rmse": rmse, "pearson_corr": corr_mean, "r2": r2_mean}
 
     def shared_epoch_end(self, outputs, stage):
         losses = [x["loss"].item() for x in outputs]
         maes = [x["mae"] for x in outputs]
+        mses = [x["mse"] for x in outputs]
+        rmses = [x["rmse"] for x in outputs]
         pearsons = [x["pearson_corr"] for x in outputs]
+        r2s = [x["r2"] for x in outputs]    
 
         avg_loss = np.mean(losses)
         avg_mae = np.mean(maes)
+        avg_mse = np.mean(mses)
+        avg_rmse = np.mean(rmses)
         avg_corr = np.mean(pearsons)
+        avg_r2 = np.mean(r2s)
 
         self.log(f"{stage}/loss", avg_loss, prog_bar=True, on_epoch=True)
         self.log(f"{stage}/mae", avg_mae, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/mse", avg_mse, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/rmse", avg_rmse, prog_bar=True, on_epoch=True)
         self.log(f"{stage}/pearson_corr", avg_corr, prog_bar=True, on_epoch=True)
+        self.log(f"{stage}/r2", avg_r2, prog_bar=True, on_epoch=True)
 
-        print(f"Epoch {self.current_epoch + 1}: {stage.capitalize()} Loss: {avg_loss:.4f}, MAE: {avg_mae:.4f}, Pearson Corr: {avg_corr:.4f}")
+        print(f"Epoch {self.current_epoch + 1}: {stage.capitalize()} Loss: {avg_loss:.4f}, MAE: {avg_mae:.4f}, MSE: {avg_mse:.4f}, RMSE: {avg_rmse:.4f}, Pearson Corr: {avg_corr:.4f}, R²: {avg_r2:.4f}")
 
     def training_step(self, batch, batch_idx):
         out = self.shared_step(batch, "train")
@@ -226,7 +252,7 @@ def main():
         T_MAX=T_MAX,
         train_dataset=train_dataset)
 
-    wandb_logger = WandbLogger(project="heatmap_vesseldetection", name=f"regression-{config.architecture}-{config.encoder_name}")
+    wandb_logger = WandbLogger(project="heatmap_vesseldetection", name=f"regression-{config.loss}-{config.architecture}-{config.encoder_name}")
     
     wandb_logger.log_hyperparams({
         "epochs": config.epochs,

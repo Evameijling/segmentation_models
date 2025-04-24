@@ -1,0 +1,18 @@
+program: regression_segmentation.py
+method: bayes  # Optimization method: grid, random, or bayes
+metric:
+  name: valid/loss 
+  goal: minimize
+parameters:
+  train_model:
+    value: True
+  batch_size:
+    values: [8, 16, 32]  
+  learning_rate:
+    values: [1e-5, 1e-4, 1e-3, 1e-2] 
+  epochs:
+    values: [10]  
+  sigma_factor:
+    values: [0.1, 0.3, 0.5]
+  weight_exponent:
+    values: [0.1, 0.3, 0.5]
