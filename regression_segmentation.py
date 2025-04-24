@@ -22,6 +22,8 @@ from datasets.heatmapsHRSIDvessel_dataset import VesselHeatmapDataset
 from dataclasses import dataclass
 from losses import BinarySeesawLoss, WeightedsumDiceSeesaw, FocalComboLoss
 
+from heat_to_binary import heat_to_binary_adaptive
+
 import argparse
 
 @dataclass
@@ -285,28 +287,46 @@ def main():
 
     # Visualization of results
     batch = next(iter(test_loader))
-    images, masks = batch
+    images, heatmaps = batch
+
+    # retrieve original segmentation masks from base dataset
+    base_dataset = test_dataset.base  # assumes VesselHeatmapDataset wraps VesselDetectHRSIDDataset
+    original_masks = [base_dataset[i][1] for i in range(len(heatmaps))]  # retrieve original segmentation masks
+
     with torch.no_grad():
         model.eval()
         predictions = model(images)
     pr_masks = predictions
+
     os.makedirs(f"output_heatmap/predictions_{config.dataset.__name__}", exist_ok=True)
-    for idx, (image, gt_mask, pr_mask) in enumerate(zip(images, masks, pr_masks)):
+    for idx, (image, gt_heatmap, pr_mask, orig_mask) in enumerate(zip(images, heatmaps, pr_masks, original_masks)):
         if idx <= 4:
-            plt.figure(figsize=(15, 5))
-            plt.subplot(1, 4, 1)
-            plt.imshow(image[0].numpy(), cmap="gray")
-            plt.title("Channel 1")
-            plt.axis("off")
-            plt.subplot(1, 4, 3)
-            plt.imshow(gt_mask.numpy().squeeze(), cmap="magma")
-            plt.title("Ground Truth")
-            plt.axis("off")
-            plt.subplot(1, 4, 4)
-            plt.imshow(pr_mask.numpy().squeeze(), cmap="magma")
-            plt.title("Prediction")
-            plt.axis("off")
-            plt.savefig(f"output_heatmap/predictions_{config.dataset.__name__}/prediction{idx}.png")
+            fig, axs = plt.subplots(1, 5, figsize=(20, 4))
+
+            axs[0].imshow(image[0].numpy(), cmap="gray")
+            axs[0].set_title("Channel 1")
+            axs[0].axis("off")
+
+            axs[1].imshow(orig_mask.squeeze().numpy(), cmap="gray")
+            axs[1].set_title("Original Segmentation")
+            axs[1].axis("off")
+
+            axs[2].imshow(gt_heatmap.numpy().squeeze(), cmap="magma")
+            axs[2].set_title("Ground Truth Heatmap")
+            axs[2].axis("off")
+
+            axs[3].imshow(pr_mask.numpy().squeeze(), cmap="magma")
+            axs[3].set_title("Predicted Heatmap")
+            axs[3].axis("off")
+
+            binary_map = heat_to_binary_adaptive(pr_mask.squeeze().numpy(), peak_frac=0.6)
+            axs[4].imshow(binary_map.astype(float), cmap="gray")
+            axs[4].set_title("Binary Map (Watershed)")
+            axs[4].axis("off")
+
+            plt.tight_layout()
+            fig.savefig(f"output_heatmap/predictions_{config.dataset.__name__}/prediction{idx}.png", bbox_inches='tight', dpi=150)
+            plt.close(fig)
         else:
             break
 

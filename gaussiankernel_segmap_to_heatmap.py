@@ -50,20 +50,6 @@ def segmentation_to_heatmap(
         # 2b) σ scales with sqrt(area)
         sigma = sigma_factor * np.sqrt(area)
         
-        # # 2c) Distance‐to‐edge map (peaks at component center)
-        # dist_map = distance_transform_edt(comp_mask)
-        # # Avoid divide‐by‐zero
-        # if dist_map.max() > 0:
-        #     dist_map = dist_map / dist_map.max()
-        # else:
-        #     dist_map = dist_map
-        
-        # # 2d) Gaussian blur of the binary component
-        # blurred = gaussian_filter(comp_mask.astype(float), sigma=sigma, mode='constant')
-        
-        # # 2e) Combine: amplitude * blur * center‐weight
-        # heatmap += weight * blurred * dist_map
-
         # 1) build a normalized distance map
         dist_map = distance_transform_edt(comp_mask)
         dist_map /= dist_map.max()
