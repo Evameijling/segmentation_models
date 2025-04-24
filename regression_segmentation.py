@@ -51,6 +51,8 @@ def str2bool(v):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a Vessel Detection Model")
+    # parser.add_argument("--train_model", action="store_true", default=False,
+    #                     help="Flag to determine if the model should be trained, default = False")
     parser.add_argument("--train_model", type=str2bool, default=False,
                     help="Flag to determine if the model should be trained, default = False")
     parser.add_argument("--epochs", type=int, default=10,
